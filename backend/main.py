@@ -51,12 +51,9 @@ def gtts_speak(text, path, pitch=0, speed=0):
         return False
     path = Path(path)
     try:
-        if pitch == 0 and speed <= 0:
-            gTTS(text=t, lang="km", slow=False).save(str(path))
-            return True
         base = path.with_name(path.stem + "_base.mp3")
         gTTS(text=t, lang="km", slow=False).save(str(base))
-        af = []
+        af = ["silenceremove=start_periods=1:start_duration=0.02:start_threshold=-35dB"]
         if pitch != 0:
             af.append(f"rubberband=pitch={2 ** (pitch / 12.0):.6f}")
         if speed and speed > 0:
@@ -163,7 +160,7 @@ def operation_status(id: str = Query(...)):
     return st
 
 
-WHISPER_MODEL_NAME = os.environ.get("WHISPER_MODEL", "base")
+WHISPER_MODEL_NAME = os.environ.get("WHISPER_MODEL", "small")
 _WHISPER_MODEL = None
 def get_whisper():
     global _WHISPER_MODEL
@@ -194,7 +191,8 @@ async def transcribe(payload: dict):
             data = wf.readframes(n)
             audio = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
             model = get_whisper()
-            results, info = model.transcribe(audio, beam_size=1, language="zh")
+            results, info = model.transcribe(audio, beam_size=5, language="zh",
+                                            vad_filter=True, condition_on_previous_text=False)
             for s in results:
                 text = (s.text or "").strip()
                 if not text:
@@ -367,12 +365,12 @@ async def segments_fix(payload: dict):
 
 @app.get("/api/tiers")
 def tiers():
-    return {"current": "Free", "tiers": ["Free", "Pro"], "models": {"stt": "faster-whisper (base)", "tts": "gTTS (km)"}}
+    return {"current": "Free", "tiers": ["Free", "Pro"], "models": {"stt": "faster-whisper (small)", "tts": "gTTS (km)"}}
 
 
 @app.get("/api/settings")
 def settings():
-    return {"translate_provider": "MyMemory/Google", "stt_model": "faster-whisper (base)",
+    return {"translate_provider": "MyMemory/Google", "stt_model": "faster-whisper (small)",
             "tts_provider": "gTTS (km) + pitch shift", "ffmpeg": ffmpeg_ok()}
 
 
