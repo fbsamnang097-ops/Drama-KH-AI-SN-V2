@@ -177,8 +177,40 @@ async def translate(payload: dict):
     if prog:
         OPS[prog] = {"state": "running", "phase": "Translating", "total": len(lines), "completed": 0}
     out = []
+    # try real translation: MyMemory (free, no key) then Google (deep-translator)
+    translated = None
+    if lines:
+        try:
+            import urllib.request, urllib.parse, json as _j, time as _t
+            translated = []
+            for ln in lines:
+                try:
+                    q = urllib.parse.quote(str(ln))
+                    url = f"https://api.mymemory.translated.net/get?q={q}&langpair=zh|km"
+                    r = urllib.request.urlopen(url, timeout=15)
+                    d = _j.loads(r.read())
+                    txt = d.get("responseData", {}).get("translatedText")
+                    translated.append(txt if txt else None)
+                    _t.sleep(0.2)
+                except Exception:
+                    translated.append(None)
+            if not any(translated):
+                translated = None
+        except Exception:
+            translated = None
+    if translated is None and lines:
+        try:
+            from deep_translator import GoogleTranslator
+            t = GoogleTranslator(source="zh-CN", target="km")
+            translated = t.translate_batch([str(x) for x in lines])
+        except Exception:
+            translated = None
     for i, ln in enumerate(lines):
-        km = KH_MOCK[i % len(KH_MOCK)]
+        km = None
+        if translated and i < len(translated) and translated[i]:
+            km = str(translated[i]).strip()
+        if not km:
+            km = KH_MOCK[i % len(KH_MOCK)]
         out.append({"km": km, "text": km})
     if prog:
         OPS[prog] = {"state": "done", "phase": "Done", "total": len(lines), "completed": len(lines)}
