@@ -42,7 +42,7 @@ def char_pitch(code):
         return 5
     return 0
 
-def gtts_speak(text, path, pitch=0):
+def gtts_speak(text, path, pitch=0, speed=0):
     from gtts import gTTS
     from pathlib import Path
     t = (text or "").strip()
@@ -50,15 +50,19 @@ def gtts_speak(text, path, pitch=0):
         return False
     path = Path(path)
     try:
-        if pitch == 0:
+        if pitch == 0 and speed <= 0:
             gTTS(text=t, lang="km", slow=False).save(str(path))
             return True
         base = path.with_name(path.stem + "_base.mp3")
         gTTS(text=t, lang="km", slow=False).save(str(base))
-        factor = 2 ** (pitch / 12.0)
+        af = []
+        if pitch != 0:
+            af.append(f"rubberband=pitch={2 ** (pitch / 12.0):.6f}")
+        if speed and speed > 0:
+            af.append(f"atempo={1 + speed:.4f}")
         subprocess.run([FFMPEG, "-y", "-i", str(base),
-                        "-af", f"rubberband=pitch={factor:.6f}" ,
-                        str(path)], capture_output=True, check=True)
+                        "-af", ",".join(af), str(path)],
+                       capture_output=True, check=True)
         try:
             base.unlink()
         except Exception:
@@ -298,6 +302,7 @@ async def tts(payload: dict):
     idx = payload.get("idx")
     text = (payload.get("text") or "").strip()
     char_code = (payload.get("char_id") or payload.get("char") or "").strip()
+    speed = float(payload.get("speed") or 0)
     # try to get khmer text from stored segments if not provided
     segs = VID_SEGMENTS.get(vid) or []
     km_text = text
@@ -322,7 +327,7 @@ async def tts(payload: dict):
     path = DATA / name
     ok = False
     if km_text:
-        ok = gtts_speak(km_text, path, pitch=char_pitch(char_code))
+        ok = gtts_speak(km_text, path, pitch=char_pitch(char_code), speed=speed)
     if not ok:
         # fallback beep
         from pathlib import Path as _P
