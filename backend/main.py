@@ -353,6 +353,50 @@ async def tts(payload: dict):
     return {"url": f"/files/{name}", "audio_duration": dur}
 
 
+@app.post("/api/segments/fix")
+async def segments_fix(payload: dict):
+    segs = payload.get("segments") or []
+    # simple: keep timings, return as-is
+    out = []
+    for s in segs:
+        out.append({"start": float(s.get("start") or 0), "end": float(s.get("end") or 0), "zh": s.get("zh") or ""})
+    return {"segments": out, "count": len(out)}
+
+
+@app.get("/api/tiers")
+def tiers():
+    return {"current": "Free", "tiers": ["Free", "Pro"], "models": {"stt": "faster-whisper (base)", "tts": "gTTS (km)"}}
+
+
+@app.get("/api/settings")
+def settings():
+    return {"translate_provider": "MyMemory/Google", "stt_model": "faster-whisper (base)",
+            "tts_provider": "gTTS (km) + pitch shift", "ffmpeg": ffmpeg_ok()}
+
+
+@app.post("/api/tts_export")
+async def tts_export(payload: dict):
+    segs = payload.get("segments") or []
+    import zipfile
+    name = f"tts_export_{uuid.uuid4().hex[:6]}.zip"
+    zpath = DATA / name
+    with zipfile.ZipFile(zpath, "w") as zf:
+        for s in segs:
+            audio_url = s.get("audio") or ""
+            if not audio_url:
+                continue
+            fname = audio_url.split("/")[-1]
+            fpath = DATA / fname
+            if fpath.exists():
+                zf.write(str(fpath), fname)
+    return {"url": f"/files/{name}"}
+
+
+@app.get("/api/projects")
+def projects():
+    return []
+
+
 @app.post("/api/layer")
 async def layer(id: str = Query(...), kind: str = Query("overlay"), file: UploadFile = File(...)):
     ext = Path(file.filename or "layer").suffix or ".bin"
