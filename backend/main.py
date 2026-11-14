@@ -193,8 +193,9 @@ async def transcribe(payload: dict):
                 text = (s.text or "").strip()
                 if not text:
                     continue
+                roles = ["F1", "S0", "M2", "M1"]
                 segs.append({"start": float(s.start), "end": float(s.end),
-                             "zh": text, "char": ""})
+                             "zh": text, "char": roles[len(segs) % len(roles)]})
         except Exception as e:
             # fallback to demo lines on failure
             segs = [dict(s) for s in DEMO_LINES]
@@ -277,9 +278,12 @@ async def detect(payload: dict):
     prog = payload.get("progress_id")
     if prog:
         OPS[prog] = {"state": "running", "phase": "Detecting", "total": len(segs), "completed": 0}
+    roles = ["F1", "S0", "M2", "M1"]
     items = []
     for i, s in enumerate(segs):
-        code = s.get("char") or "F1"
+        code = (s.get("char") or "").strip()
+        if not code:
+            code = roles[i % len(roles)]
         items.append({"idx": i, "char_id": code})
     chars = [{"id": r["char"], "name": r["voiceName"], "voiceName": r["voiceName"], "voice": r["char"],
               "gender": "female" if r["char"] in ("F1", "S0", "女主") else "male"} for r in ROLES[:5]]
