@@ -51,6 +51,7 @@ EXPORTS = {}
 BGM = {}
 OPS = {}
 VID_SEGMENTS = {}
+VID_CHAR_OVERRIDES = {}
 
 ROLES = [
     {"char": "F1", "voiceName": "F1 (female)"},
@@ -215,6 +216,23 @@ async def translate(payload: dict):
     if prog:
         OPS[prog] = {"state": "done", "phase": "Done", "total": len(lines), "completed": len(lines)}
     return out
+
+
+@app.post("/api/characters/assign")
+async def assign_chars(payload: dict):
+    vid = payload.get("id")
+    overrides = payload.get("overrides") or {}
+    if vid:
+        VID_CHAR_OVERRIDES[vid] = overrides
+        # apply overrides to stored segments if present
+        segs = VID_SEGMENTS.get(vid)
+        if segs:
+            for i, ov in overrides.items():
+                try:
+                    segs[int(i)]["char"] = ov
+                except Exception:
+                    pass
+    return {"ok": True}
 
 
 @app.post("/api/characters/detect")
