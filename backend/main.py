@@ -25,7 +25,8 @@ def ffmpeg_ok():
         return False
 
 PITCH_MAP = {
-    "F1": 3, "S0": 5, "Sr": 7, "女主": 4, "旁白": -1,
+    "F1": 3, "S0": 5, "Sr": 6, "Sreymom": 6, "Piseth": -4,
+    "女主": 4, "旁白": -1,
     "M2": -3, "M1": -5, "男主": -4,
 }
 
@@ -98,7 +99,8 @@ ROLES = [
     {"char": "S0", "voiceName": "S0 (female)"},
     {"char": "M2", "voiceName": "M2 (male)"},
     {"char": "M1", "voiceName": "M1 (male)"},
-    {"char": "Sr", "voiceName": "Sreymon"},
+    {"char": "Sr", "voiceName": "Sreymom"},
+    {"char": "Piseth", "voiceName": "Piseth"},
     {"char": "男主", "voiceName": "Male lead"},
     {"char": "女主", "voiceName": "Female lead"},
     {"char": "旁白", "voiceName": "Narrator"},
@@ -197,7 +199,7 @@ async def transcribe(payload: dict):
                 text = (s.text or "").strip()
                 if not text:
                     continue
-                roles = ["F1", "S0", "M2", "M1"]
+                roles = ["F1", "S0", "M2", "M1", "Sr", "Piseth"]
                 segs.append({"start": float(s.start), "end": float(s.end),
                              "zh": text, "char": roles[len(segs) % len(roles)]})
         except Exception as e:
@@ -282,7 +284,7 @@ async def detect(payload: dict):
     prog = payload.get("progress_id")
     if prog:
         OPS[prog] = {"state": "running", "phase": "Detecting", "total": len(segs), "completed": 0}
-    roles = ["F1", "S0", "M2", "M1"]
+    roles = ["F1", "S0", "M2", "M1", "Sr", "Piseth"]
     items = []
     for i, s in enumerate(segs):
         code = (s.get("char") or "").strip()
