@@ -4,6 +4,7 @@ import math
 import wave
 import struct
 import shutil
+import subprocess
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, Query
 from fastapi.staticfiles import StaticFiles
@@ -11,30 +12,38 @@ from fastapi.staticfiles import StaticFiles
 BASE = Path(__file__).resolve().parent.parent
 DATA = BASE / "data"
 DATA.mkdir(exist_ok=True)
-DEFAULT_WAV = DATA / "beep.wav"
+BIN = BASE / "bin"
+FFMPEG = str(BIN / "ffmpeg") if (BIN / "ffmpeg").exists() else "ffmpeg"
+FFPROBE = str(BIN / "ffprobe") if (BIN / "ffprobe").exists() else "ffprobe"
 
-def make_beep(path, duration=1.2):
-    fr = 22050
-    dur = max(0.3, min(6.0, float(duration or 1.2)))
-    n = int(fr * dur)
-    with wave.open(str(path), "w") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(fr)
-        frames = bytearray()
-        for i in range(n):
-            t = i / fr
-            val = 0.35 * math.sin(2 * math.pi * 440 * t) + 0.2 * math.sin(2 * math.pi * 880 * t)
-            env = 1.0 - (i / n) * 0.6
-            val *= env
-            iv = int(max(-1, min(1, val)) * 32767)
-            frames += iv.to_bytes(2, "little", signed=True)
-        w.writeframes(frames)
+def ffmpeg_ok():
+    try:
+        subprocess.run([FFMPEG, "-version"], capture_output=True, check=True)
+        return True
+    except Exception:
+        return False
 
-if not DEFAULT_WAV.exists():
-    make_beep(DEFAULT_WAV, 1.2)
+def gtts_speak(text, path):
+    from gtts import gTTS
+    t = (text or "").strip()
+    if not t:
+        return False
+    try:
+        gTTS(text=t, lang="km", slow=False).save(str(path))
+        return True
+    except Exception:
+        return False
 
-app = FastAPI(title="KH Drama Pro (mock backend)")
+def probe_duration(path):
+    try:
+        out = subprocess.run([FFPROBE, "-v", "error", "-show_entries", "format=duration",
+                             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+                            capture_output=True, text=True, check=True)
+        return float(out.stdout.strip())
+    except Exception:
+        return 0.0
+
+app = FastAPI(title="KH Drama Pro")
 
 VIDEOS = {}
 EXPORTS = {}
@@ -70,15 +79,15 @@ DEMO_LINES = [
 ]
 
 KH_MOCK = [
-    "បកប្រែ: សូមស្វាគមន៍",
-    "បកប្រែ: ស្អប់ខ្លាំង",
-    "បកប្រែ: អ្នកទើបតែប្រាំបួន",
-    "បកប្រែ: ទឹកក៏បិទមិនបាន",
-    "បកប្រែ: ខ្ញុំខកចិត្តណាស់",
-    "បកប្រែ: សូមគោរព",
-    "បកប្រែ: តើអ្នកសមនឹងទេ?",
-    "បកប្រែ: ខ្ញុំមិនទាន់ស្លាប់ទេ",
-    "បកប្រែ: ជូនកាដូ",
+    "សូមស្វាគមន៍",
+    "ស្អប់ខ្លាំង",
+    "អ្នកទើបតែប្រាំបួន",
+    "ទឹកក៏បិទមិនបាន",
+    "ខ្ញុំខកចិត្តណាស់",
+    "សូមគោរព",
+    "តើអ្នកសមនឹងទេ?",
+    "ខ្ញុំមិនទាន់ស្លាប់ទេ",
+    "ជូនកាដូ",
 ]
 
 
@@ -160,23 +169,54 @@ async def detect(payload: dict):
 async def tts(payload: dict):
     vid = payload.get("video") or ""
     idx = payload.get("idx")
-    dur = 1.2
+    text = (payload.get("text") or "").strip()
+    # try to get khmer text from stored segments if not provided
     segs = VID_SEGMENTS.get(vid) or []
-    try:
-        if idx is not None and isinstance(idx, int) and 0 <= idx < len(segs):
-            s = segs[idx]
-            dur = max(0.3, (s.get("end") or 0) - (s.get("start") or 0))
-        elif idx is not None:
+    km_text = text
+    if not km_text and idx is not None:
+        try:
             i = int(idx)
             if 0 <= i < len(segs):
-                s = segs[i]
-                dur = max(0.3, (s.get("end") or 0) - (s.get("start") or 0))
-    except Exception:
-        dur = 1.2
-    name = f"{vid or 'x'}_{idx if idx is not None else 'tts'}.wav"
+                km_text = (segs[i].get("km") or segs[i].get("zh") or "").strip()
+        except Exception:
+            pass
+    # strip latin fallback markers
+    km_text = km_text.replace("បកប្រែ: ", "").strip() if km_text.startswith("បកប្រែ:") else km_text
+    # use provided text if it contains khmer chars else use mock
+    if not any("\u1780" <= ch <= "\u17ff" for ch in km_text):
+        try:
+            i = int(idx) if idx is not None else 0
+            km_text = KH_MOCK[i % len(KH_MOCK)].replace("បកប្រែ: ", "").strip()
+        except Exception:
+            km_text = "សួស្តី"
+
+    name = f"{vid or 'x'}_{idx if idx is not None else 'tts'}.mp3"
     path = DATA / name
-    if not path.exists():
-        make_beep(path, dur)
+    ok = False
+    if km_text:
+        ok = gtts_speak(km_text, path)
+    if not ok:
+        # fallback beep
+        from pathlib import Path as _P
+        beep = DATA / "beep.wav"
+        if not beep.exists():
+            # generate
+            fr = 22050; dur = 1.2; n = int(fr * dur)
+            import wave as _w
+            with _w.open(str(beep), "w") as wf:
+                wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(fr)
+                buf = bytearray()
+                for i in range(n):
+                    t = i / fr
+                    val = 0.3 * math.sin(2 * math.pi * 440 * t)
+                    iv = int(max(-1, min(1, val)) * 32767)
+                    buf += iv.to_bytes(2, "little", signed=True)
+                wf.writeframes(buf)
+        path = beep
+        name = beep.name
+    dur = probe_duration(path)
+    if dur <= 0:
+        dur = 1.2
     return {"url": f"/files/{name}", "audio_duration": dur}
 
 
@@ -215,13 +255,82 @@ async def bgm_demo(id: str = Query(...)):
 
 @app.post("/api/voice_preview")
 async def voice_preview(payload: dict):
-    return {"url": "/files/beep.wav"}
+    vid = payload.get("voice") or ""
+    text = "សួស្តី"
+    name = f"preview_{uuid.uuid4().hex[:6]}.mp3"
+    path = DATA / name
+    ok = gtts_speak(text, path)
+    if not ok:
+        return {"url": "/files/beep.wav"}
+    return {"url": f"/files/{name}"}
 
 
 @app.post("/api/export")
 async def export_job(payload: dict):
     vid = payload.get("id")
-    url = f"/files/{VIDEOS.get(vid)}" if vid in VIDEOS else "/files/beep.wav"
+    segs = payload.get("segments") or []
+    video_path = DATA / VIDEOS.get(vid, "") if vid in VIDEOS else None
+    out_path = DATA / f"{vid}_km.mp4"
+
+    if not video_path or not video_path.exists() or not ffmpeg_ok():
+        # fallback: return original or beep
+        url = f"/files/{VIDEOS.get(vid)}" if vid in VIDEOS else "/files/beep.wav"
+        EXPORTS[vid] = {"state": "done", "percent": 100, "eta": "0s", "url": url}
+        return {"ok": True}
+
+    # collect audio clips
+    clips = []  # (start_seconds, local_path)
+    for s in segs:
+        audio_url = s.get("audio") or ""
+        if not audio_url:
+            continue
+        fname = audio_url.split("/")[-1]
+        fpath = DATA / fname
+        if not fpath.exists():
+            continue
+        start = float(s.get("start") or 0)
+        clips.append((start, fpath))
+
+    if not clips:
+        # no audio: just copy/remux video
+        subprocess.run([FFMPEG, "-y", "-i", str(video_path), "-c", "copy", str(out_path)],
+                       capture_output=True)
+        EXPORTS[vid] = {"state": "done", "percent": 100, "eta": "0s", "url": f"/files/{out_path.name}"}
+        return {"ok": True}
+
+    # build ffmpeg command with adelay + amix
+    cmd = [FFMPEG, "-y", "-i", str(video_path)]
+    # silent base audio
+    cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono"]
+    for start, fpath in clips:
+        cmd += ["-i", str(fpath)]
+
+    # filter complex
+    # input 0 = video, 1 = anullsrc, 2.. = clips
+    filter_parts = []
+    amix_inputs = ["[1:a]"]
+    for i, (start, fpath) in enumerate(clips):
+        inp_idx = 2 + i
+        delay_ms = int(start * 1000)
+        tag = f"[a{i}]"
+        filter_parts.append(f"[{inp_idx}:a]adelay={delay_ms}|{delay_ms}{tag}")
+        amix_inputs.append(tag)
+    n = len(amix_inputs)
+    filter_parts.append(f"{''.join(amix_inputs)}amix=inputs={n}:duration=first:dropout_transition=0[aout]")
+    filter_complex = ";".join(filter_parts)
+
+    cmd += ["-filter_complex", filter_complex,
+            "-map", "0:v", "-map", "[aout]",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            "-c:a", "aac", "-b:a", "128k",
+            "-shortest", str(out_path)]
+
+    try:
+        subprocess.run(cmd, capture_output=True, check=True)
+    except subprocess.CalledProcessError as e:
+        # fallback to original
+        shutil.copyfile(video_path, out_path)
+    url = f"/files/{out_path.name}" if out_path.exists() else f"/files/{VIDEOS.get(vid)}"
     EXPORTS[vid] = {"state": "done", "percent": 100, "eta": "0s", "url": url}
     return {"ok": True}
 
