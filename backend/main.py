@@ -43,6 +43,33 @@ def char_pitch(code):
         return 5
     return 0
 
+def edge_voice(code):
+    code = (code or "").strip()
+    low = code.lower()
+    if low in ("m1", "m2", "男主", "piseth") or low.startswith("m"):
+        return "km-KH-PisethNeural"
+    return "km-KH-SreymomNeural"
+
+
+def edge_tts_speak(text, path, voice, speed=0):
+    import asyncio
+    import edge_tts
+    t = (text or "").strip()
+    if not t:
+        return False
+    from pathlib import Path
+    path = Path(path)
+    try:
+        rate = "+0%"
+        if speed and speed > 0:
+            rate = f"+{int(speed * 100)}%"
+        comm = edge_tts.Communicate(t, voice, rate=rate)
+        asyncio.run(comm.save(str(path)))
+        return path.exists() and path.stat().st_size > 0
+    except Exception:
+        return False
+
+
 def gtts_speak(text, path, pitch=0, speed=0):
     from gtts import gTTS
     from pathlib import Path
@@ -327,7 +354,10 @@ async def tts(payload: dict):
     path = DATA / name
     ok = False
     if km_text:
-        ok = gtts_speak(km_text, path, pitch=char_pitch(char_code), speed=speed)
+        voice = edge_voice(char_code)
+        ok = edge_tts_speak(km_text, path, voice, speed=speed)
+        if not ok:
+            ok = gtts_speak(km_text, path, pitch=char_pitch(char_code), speed=speed)
     if not ok:
         # fallback beep
         from pathlib import Path as _P
@@ -436,7 +466,10 @@ async def voice_preview(payload: dict):
     text = "សួស្តី"
     name = f"preview_{uuid.uuid4().hex[:6]}.mp3"
     path = DATA / name
-    ok = gtts_speak(text, path)
+    voice = "km-KH-SreymomNeural" if "sreym" in str(vid).lower() or "f" in str(vid).lower() else "km-KH-PisethNeural"
+    ok = edge_tts_speak(text, path, voice)
+    if not ok:
+        ok = gtts_speak(text, path)
     if not ok:
         return {"url": "/files/beep.wav"}
     return {"url": f"/files/{name}"}
