@@ -348,7 +348,7 @@ async def export_job(payload: dict):
         return {"ok": True}
 
     # collect audio clips
-    clips = []  # (start_seconds, local_path)
+    clips = []  # (start_seconds, end_seconds, local_path)
     for s in segs:
         audio_url = s.get("audio") or ""
         if not audio_url:
@@ -358,7 +358,10 @@ async def export_job(payload: dict):
         if not fpath.exists():
             continue
         start = float(s.get("start") or 0)
-        clips.append((start, fpath))
+        end = float(s.get("end") or (start + 1.0))
+        if end <= start:
+            end = start + 1.0
+        clips.append((start, end, fpath))
 
     if not clips:
         # no audio: just copy/remux video
@@ -371,18 +374,48 @@ async def export_job(payload: dict):
     cmd = [FFMPEG, "-y", "-i", str(video_path)]
     # silent base audio
     cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono"]
-    for start, fpath in clips:
+    for start, end, fpath in clips:
         cmd += ["-i", str(fpath)]
 
     # filter complex
     # input 0 = video, 1 = anullsrc, 2.. = clips
     filter_parts = []
+    def probe_dur(p):
+        try:
+            r = subprocess.run([FFPROBE, "-v", "error", "-show_entries", "format=duration",
+                                "-of", "default=noprint_wrappers=1:nokey=1", str(p)],
+                               capture_output=True, text=True)
+            return float((r.stdout or "").strip())
+        except Exception:
+            return 0.0
+
+    def atempo_chain(ratio):
+        if ratio <= 0:
+            return ""
+        factors = []
+        rem = ratio
+        while rem > 2.0:
+            factors.append(2.0); rem /= 2.0
+        while rem < 0.5:
+            factors.append(0.5); rem *= 2.0
+        factors.append(rem)
+        return ",".join(f"atempo={f:.4f}" for f in factors)
+
     amix_inputs = ["[1:a]"]
-    for i, (start, fpath) in enumerate(clips):
+    for i, (start, end, fpath) in enumerate(clips):
         inp_idx = 2 + i
         delay_ms = int(start * 1000)
+        target = max(0.1, end - start)
+        actual = probe_dur(fpath)
         tag = f"[a{i}]"
-        filter_parts.append(f"[{inp_idx}:a]adelay={delay_ms}|{delay_ms}{tag}")
+        chain = []
+        if actual > 0:
+            ratio = actual / target
+            if abs(ratio - 1.0) > 0.02:
+                chain.append(atempo_chain(ratio))
+        chain.append(f"apad,atrim=0:{target:.3f}")
+        proc = ",".join([c for c in chain if c])
+        filter_parts.append(f"[{inp_idx}:a]{proc},adelay={delay_ms}|{delay_ms}{tag}")
         amix_inputs.append(tag)
     n = len(amix_inputs)
     filter_parts.append(f"{''.join(amix_inputs)}amix=inputs={n}:duration=first:dropout_transition=0[aout]")
