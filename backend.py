@@ -74,6 +74,7 @@ class TTSRequest(BaseModel):
     idx: int = 0
     gender: str = ""
     speed: float = Field(default=0, ge=0, le=1)
+    fit_to: float = Field(default=0, ge=0, le=60)
 
 
 class DetectRequest(BaseModel):
@@ -595,7 +596,30 @@ async def tts(body: TTSRequest) -> dict[str, Any]:
                 await asyncio.sleep(0.8)  # transient Edge TTS hiccups are common
     if last_error is not None:
         raise HTTPException(status_code=502, detail=f"Edge TTS failed for {voice}: {last_error}") from last_error
-    return {"url": _public_url(output), "audio_duration": _ffprobe_duration(output), "voice": voice}
+    audio_duration = _ffprobe_duration(output)
+    # Guaranteed lip-sync fit: when the Khmer voice runs longer than the slot
+    # (its window until the next line), speed the clip with atempo so voices
+    # never overlap into the next character's shot.
+    if body.fit_to >= 0.5 and audio_duration > body.fit_to:
+        remaining = audio_duration / body.fit_to
+        atempo: list[str] = []
+        while remaining > 2.0:
+            atempo.append("atempo=2.0")
+            remaining /= 2.0
+        atempo.append(f"atempo={min(2.0, max(0.5, remaining)):.4f}")
+        fitted = output.with_suffix(".fit.mp3")
+        result = subprocess.run(
+            [_ffmpeg(), "-v", "error", "-y", "-i", str(output),
+             "-filter:a", ",".join(atempo), str(fitted)],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode == 0 and fitted.is_file():
+            fitted_duration = _ffprobe_duration(fitted)
+            if fitted_duration <= body.fit_to * 1.05:
+                output.unlink(missing_ok=True)
+                fitted.replace(output)
+                audio_duration = fitted_duration
+    return {"url": _public_url(output), "audio_duration": audio_duration, "voice": voice}
 
 
 def _scene_cuts(media: Path, duration: float) -> list[float]:

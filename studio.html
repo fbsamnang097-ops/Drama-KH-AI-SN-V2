@@ -1056,14 +1056,14 @@ async function doVoice(){
     if(!txt&&((s.km||s.zh)||'').trim())txt=(s.km||s.zh).trim();/* អត្ថបទផ្សេងៗ (រូបិយប័ណ្ណ/ចិន…) — និយាយដោយមិនកាត់ផ្តាច់ */
     if(!txt){skipped++;s.audio='';n++;setPct(n/targets.length*100);return;}
     try{
-      let res=await json('/api/tts',{text:txt,char:s.char,char_id:s.cid||'',video:VID,idx:i,gender:(window.__ttsGender||''),speed:s.speed||0});
+      const win0=windowOf(i);let res=await json('/api/tts',{text:txt,char:s.char,char_id:s.cid||'',video:VID,idx:i,gender:(window.__ttsGender||''),speed:s.speed||0,fit_to:win0});
       s.audio=res.url;s.adur=res.audio_duration;
       /* Auto-fit: បើសំឡេងវែងជាងចន្លោះ → បង្កើតឡើងវិញជាមួយល្បឿនលឿនជាង (ពាក្យមិនដាច់) */
       const win=windowOf(i);
       if(s.adur&&s.adur>win){
         const spd=Math.min(0.6,Math.round((s.adur/win-1)*100)/100);
         if(spd>0.03){
-          try{const r2=await json('/api/tts',{text:txt,char:s.char,char_id:s.cid||'',video:VID,idx:i,gender:(window.__ttsGender||''),speed:spd});
+          try{const r2=await json('/api/tts',{text:txt,char:s.char,char_id:s.cid||'',video:VID,idx:i,gender:(window.__ttsGender||''),speed:spd,fit_to:win});
             if(r2.audio_duration&&r2.audio_duration<s.adur){s.audio=r2.url;s.adur=r2.audio_duration;s.speed=spd;}
           }catch(_){/**/}
         }
@@ -1084,7 +1084,7 @@ async function doVoice(){
     toast('🔁 Retry ជុំ '+(r+1)+' — '+fail.length+' lines…');
     const cur=[...fail];fail.length=0;const nf=[];
     await Promise.all(cur.map(async i=>{const s=SEGS[i];
-      try{const res=await json('/api/tts',{text:cleanTTS(s.km||s.zh),char:s.char,char_id:s.cid||'',video:VID,idx:i,gender:(window.__ttsGender||''),speed:s.speed||0});s.audio=res.url;s.adur=res.audio_duration;}
+      try{const res=await json('/api/tts',{text:cleanTTS(s.km||s.zh),char:s.char,char_id:s.cid||'',video:VID,idx:i,gender:(window.__ttsGender||''),speed:s.speed||0,fit_to:windowOf(i)});s.audio=res.url;s.adur=res.audio_duration;}
       catch(e){nf.push(i);}}));
     fail.push(...nf);
   }
