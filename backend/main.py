@@ -1,35 +1,47 @@
 import os
 import uuid
-import json
+import math
 import wave
 import struct
 import shutil
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, File, Query, Form
+from fastapi import FastAPI, UploadFile, File, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 BASE = Path(__file__).resolve().parent.parent
 DATA = BASE / "data"
 DATA.mkdir(exist_ok=True)
-FILES = DATA
-SILENT_WAV = DATA / "silent.wav"
+AUDIO_WAV = DATA / "beep.wav"
 
-# create a tiny silent wav once
-if not SILENT_WAV.exists():
-    with wave.open(str(SILENT_WAV), "w") as w:
+# create a short audible beep wav once (so the demo actually has sound)
+if not AUDIO_WAV.exists():
+    fr = 22050
+    dur = 1.2
+    n = int(fr * dur)
+    with wave.open(str(AUDIO_WAV), "w") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
-        w.setframerate(22050)
-        w.writeframes(b"\x00\x00" * 22050)
+        w.setframerate(fr)
+        frames = bytearray()
+        for i in range(n):
+            t = i / fr
+            # two-tone beep
+            val = 0.35 * math.sin(2 * math.pi * 440 * t) + 0.2 * math.sin(2 * math.pi * 880 * t)
+            # fade out
+            env = 1.0 - (i / n)
+            val *= env
+            iv = int(max(-1, min(1, val)) * 32767)
+            frames += struct.pack("<h", iv) if False else iv.to_bytes(2, "little", signed=True)
+        w.writeframes(frames)
+
 
 app = FastAPI(title="KH Drama Pro (mock backend)")
 
-# in-memory state
-VIDEOS = {}          # id -> filename
-EXPORTS = {}         # id -> {state, percent, url}
-BGM = {}             # id -> {state, url, warning}
-OPS = {}             # progress_id -> {state, phase, total, completed}
+VIDEOS = {}
+EXPORTS = {}
+BGM = {}
+OPS = {}
 
 ROLES = [
     {"char": "F1", "voiceName": "F1 (female)"},
@@ -71,7 +83,7 @@ KH_MOCK = [
 ]
 
 
-def _save_upload(f: UploadFile) -> (str, str):
+def _save_upload(f: UploadFile):
     ext = Path(f.filename or "media").suffix or ".bin"
     vid = uuid.uuid4().hex[:12]
     name = f"{vid}{ext}"
@@ -105,8 +117,6 @@ async def transcribe(payload: dict):
     prog = payload.get("progress_id")
     if prog:
         OPS[prog] = {"state": "running", "phase": "Transcribing", "total": len(DEMO_LINES), "completed": 0}
-    # simulate
-    import time
     segs = [dict(s) for s in DEMO_LINES]
     if prog:
         OPS[prog] = {"state": "done", "phase": "Done", "total": len(segs), "completed": len(segs)}
@@ -122,7 +132,6 @@ async def translate(payload: dict):
     out = []
     for i, ln in enumerate(lines):
         km = KH_MOCK[i % len(KH_MOCK)]
-        # include original hint
         out.append({"km": km, "text": km})
     if prog:
         OPS[prog] = {"state": "done", "phase": "Done", "total": len(lines), "completed": len(lines)}
@@ -131,7 +140,6 @@ async def translate(payload: dict):
 
 @app.post("/api/characters/detect")
 async def detect(payload: dict):
-    vid = payload.get("id")
     segs = payload.get("segments") or []
     prog = payload.get("progress_id")
     if prog:
@@ -140,7 +148,8 @@ async def detect(payload: dict):
     for i, s in enumerate(segs):
         code = s.get("char") or "F1"
         items.append({"idx": i, "char_id": code})
-    chars = [{"id": r["char"], "name": r["voiceName"], "voiceName": r["voiceName"], "voice": r["char"], "gender": "female" if r["char"] in ("F1", "S0", "女主") else "male"} for r in ROLES[:5]]
+    chars = [{"id": r["char"], "name": r["voiceName"], "voiceName": r["voiceName"], "voice": r["char"],
+              "gender": "female" if r["char"] in ("F1", "S0", "女主") else "male"} for r in ROLES[:5]]
     if prog:
         OPS[prog] = {"state": "done", "phase": "Done", "total": len(segs), "completed": len(segs)}
     return {"items": items, "characters": chars}
@@ -148,9 +157,7 @@ async def detect(payload: dict):
 
 @app.post("/api/tts")
 async def tts(payload: dict):
-    text = payload.get("text") or ""
-    # return silent wav url; duration ~2.0
-    return {"url": "/files/silent.wav", "audio_duration": 2.0}
+    return {"url": "/files/beep.wav", "audio_duration": 1.2}
 
 
 @app.post("/api/layer")
@@ -176,41 +183,36 @@ async def bgm(id: str = Query(...), file: UploadFile = File(...)):
 
 @app.get("/api/bgm_status")
 def bgm_status(id: str = Query(...)):
-    st = BGM.get(id, {"state": "done", "url": "/files/silent.wav", "warning": None})
+    st = BGM.get(id, {"state": "done", "url": "/files/beep.wav", "warning": None})
     return st
 
 
 @app.post("/api/bgm_demo")
 async def bgm_demo(id: str = Query(...)):
-    BGM[id] = {"state": "done", "url": "/files/silent.wav", "warning": None}
-    return {"url": "/files/silent.wav"}
+    BGM[id] = {"state": "done", "url": "/files/beep.wav", "warning": None}
+    return {"url": "/files/beep.wav"}
 
 
 @app.post("/api/voice_preview")
 async def voice_preview(payload: dict):
-    return {"url": "/files/silent.wav"}
+    return {"url": "/files/beep.wav"}
 
 
 @app.post("/api/export")
 async def export_job(payload: dict):
     vid = payload.get("id")
-    EXPORTS[vid] = {"state": "done", "percent": 100, "eta": "0s", "url": VIDEOS.get(vid) and f"/files/{VIDEOS[vid]}" or "/files/silent.wav"}
-    # if original video exists use it as result
-    if vid in VIDEOS:
-        EXPORTS[vid]["url"] = f"/files/{VIDEOS[vid]}"
+    url = f"/files/{VIDEOS.get(vid)}" if vid in VIDEOS else "/files/beep.wav"
+    EXPORTS[vid] = {"state": "done", "percent": 100, "eta": "0s", "url": url}
     return {"ok": True}
 
 
 @app.get("/api/export_status")
 def export_status(id: str = Query(...)):
-    st = EXPORTS.get(id, {"state": "done", "percent": 100, "eta": "0s", "url": f"/files/{VIDEOS.get(id, 'silent.wav')}"})
+    st = EXPORTS.get(id, {"state": "done", "percent": 100, "eta": "0s", "url": f"/files/{VIDEOS.get(id, 'beep.wav')}"})
     return st
 
 
-# serve uploaded files
 app.mount("/files", StaticFiles(directory=str(DATA)), name="files")
-
-# serve frontend (index.html) at root - mount last
 app.mount("/", StaticFiles(directory=str(BASE), html=True), name="frontend")
 
 
