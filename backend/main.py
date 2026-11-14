@@ -58,12 +58,18 @@ def edge_tts_speak(text, path, voice, speed=0):
     if not t:
         return False
     from pathlib import Path
+    import html as _html
     path = Path(path)
     try:
-        rate = "+0%"
+        rate_pct = 0
         if speed and speed > 0:
-            rate = f"+{int(speed * 100)}%"
-        comm = edge_tts.Communicate(t, voice, rate=rate)
+            rate_pct = int(speed * 100)
+        # build SSML for more natural prosody
+        safe = _html.escape(t)
+        ssml = ("<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='km-KH'>"
+                f"<voice name='{voice}'><prosody rate='{0.95 + (speed or 0):.2f}' pitch='+0Hz'>"
+                f"{safe}</prosody></voice></speak>")
+        comm = edge_tts.Communicate(ssml, voice)
         asyncio.run(comm.save(str(path)))
         return path.exists() and path.stat().st_size > 0
     except Exception:
