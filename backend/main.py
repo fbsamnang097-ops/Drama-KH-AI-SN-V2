@@ -5,6 +5,7 @@ import wave
 import struct
 import shutil
 import subprocess
+import numpy as np
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, Query
 from fastapi.staticfiles import StaticFiles
@@ -119,13 +120,49 @@ def operation_status(id: str = Query(...)):
     return st
 
 
+WHISPER_MODEL_NAME = os.environ.get("WHISPER_MODEL", "base")
+_WHISPER_MODEL = None
+def get_whisper():
+    global _WHISPER_MODEL
+    if _WHISPER_MODEL is None:
+        from faster_whisper import WhisperModel
+        _WHISPER_MODEL = WhisperModel(WHISPER_MODEL_NAME, device="cpu", compute_type="int8")
+    return _WHISPER_MODEL
+
+def extract_audio(video_path, wav_path):
+    subprocess.run([FFMPEG, "-y", "-i", str(video_path), "-vn",
+                    "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", str(wav_path)],
+                   capture_output=True, check=True)
+
 @app.post("/api/transcribe")
 async def transcribe(payload: dict):
     vid = payload.get("id")
     prog = payload.get("progress_id")
     if prog:
-        OPS[prog] = {"state": "running", "phase": "Transcribing", "total": len(DEMO_LINES), "completed": 0}
-    segs = [dict(s) for s in DEMO_LINES]
+        OPS[prog] = {"state": "running", "phase": "Transcribing", "total": 0, "completed": 0}
+    segs = []
+    video_path = DATA / VIDEOS.get(vid, "") if vid in VIDEOS else None
+    if video_path and video_path.exists() and ffmpeg_ok():
+        try:
+            wav_path = DATA / f"{vid}_audio.wav"
+            extract_audio(video_path, wav_path)
+            wf = wave.open(str(wav_path), "rb")
+            n = wf.getnframes()
+            data = wf.readframes(n)
+            audio = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+            model = get_whisper()
+            results, info = model.transcribe(audio, beam_size=1, language="zh")
+            for s in results:
+                text = (s.text or "").strip()
+                if not text:
+                    continue
+                segs.append({"start": float(s.start), "end": float(s.end),
+                             "zh": text, "char": ""})
+        except Exception as e:
+            # fallback to demo lines on failure
+            segs = [dict(s) for s in DEMO_LINES]
+    if not segs:
+        segs = [dict(s) for s in DEMO_LINES]
     if vid:
         VID_SEGMENTS[vid] = segs
     if prog:
