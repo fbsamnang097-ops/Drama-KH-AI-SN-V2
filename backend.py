@@ -504,16 +504,44 @@ async def transcribe(body: dict[str, Any]) -> list[dict[str, Any]]:
     def run() -> list[dict[str, Any]]:
         try:
             model = _get_whisper()
-            segments, info = model.transcribe(str(media), beam_size=5, vad_filter=True)
-            result = []
+            # word_timestamps + gap splitting: Whisper merges whole dialogue
+            # exchanges into one mega-segment; a dub over a 7s merged segment
+            # spans several characters. Splitting on inter-word pauses keeps
+            # each line inside one character's turn.
+            GAP = 0.55
+            segments, info = model.transcribe(
+                str(media), beam_size=5, vad_filter=True,
+                word_timestamps=True, condition_on_previous_text=False,
+            )
+            result: list[dict[str, Any]] = []
             for segment in segments:
-                result.append({
-                    "start": float(segment.start),
-                    "end": float(segment.end),
-                    "zh": str(segment.text).strip(),
-                    "char": "",
-                })
-                _operation(progress_id, state="running", phase="Transcribing", completed=len(result), total=0)
+                words = list(segment.words or [])
+                if not words:
+                    result.append({
+                        "start": float(segment.start), "end": float(segment.end),
+                        "zh": str(segment.text).strip(), "char": "",
+                    })
+                    continue
+                current = [words[0]]
+
+                def flush(group: list[Any]) -> None:
+                    text = "".join(w.word for w in group).strip()
+                    if text:
+                        result.append({
+                            "start": float(group[0].start),
+                            "end": float(group[-1].end),
+                            "zh": text, "char": "",
+                        })
+                        _operation(progress_id, state="running", phase="Transcribing",
+                                   completed=len(result), total=0)
+
+                for word in words[1:]:
+                    if word.start - current[-1].end >= GAP:
+                        flush(current)
+                        current = [word]
+                    else:
+                        current.append(word)
+                flush(current)
             _operation(
                 progress_id, state="done", phase=f"Whisper {info.language}",
                 completed=len(result), total=len(result),
