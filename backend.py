@@ -311,30 +311,25 @@ def _diarize_by_pitch(media: Path, segments: list[dict[str, Any]]) -> list[dict[
         _segment_f0(audio, sample_rate, float(s.get("start", 0)), float(s.get("end", 0)))
         for s in segments
     ]
-    # Two-pass clustering: split all pitches on natural breaks (relative gap),
-    # then assign segments to the nearest cluster. The previous greedy
-    # running-mean first-fit drifted and mislabelled low-pitch female voices.
-    import statistics
-    valid = sorted(p for p in pitches if p is not None)
-    centers: list[float] = []
-    if valid:
-        groups: list[list[float]] = [[valid[0]]]
-        for pitch in valid[1:]:
-            if pitch / groups[-1][-1] > 1.25:  # natural break in the pitch range
-                groups.append([pitch])
-            else:
-                groups[-1].append(pitch)
-        centers = [statistics.median(g) for g in groups]
-        # Cap at 6 voices: merge the two closest clusters until small enough.
-        while len(centers) > 6:
-            pair = min(
-                ((i, j) for i in range(len(centers)) for j in range(i + 1, len(centers))),
-                key=lambda ij: abs(ij[0] - ij[1]) / max(centers[ij[0]], centers[ij[1]]),
-            )
-            i, j = pair
-            centers[i] = (centers[i] + centers[j]) / 2
-            del centers[j]
-    else:
+    # Gender-first clustering: an absolute pitch boundary (165Hz) separates
+    # male from female voices. Edge TTS only offers one male and one female
+    # Khmer voice, so exactly two duration-weighted centers (one per gender)
+    # are used: long utterances dominate the center, short exclamations with
+    # noisy pitch cannot drag the whole cluster away.
+    import wave as _w  # noqa: F401
+    durations = [max(0.1, float(s.get("end", 0)) - float(s.get("start", 0))) for s in segments]
+    pairs = [(p, d) for p, d in zip(pitches, durations) if p is not None]
+    male = [(p, d) for p, d in pairs if p < 165.0]
+    female = [(p, d) for p, d in pairs if p >= 165.0]
+
+    def weighted_center(group: list[tuple[float, float]]) -> float | None:
+        total = sum(d for _, d in group)
+        if total <= 0:
+            return None
+        return sum(p * d for p, d in group) / total
+
+    centers = [c for c in (weighted_center(male), weighted_center(female)) if c is not None]
+    if not centers:
         centers = [200.0]
 
     assignment: list[int] = []
