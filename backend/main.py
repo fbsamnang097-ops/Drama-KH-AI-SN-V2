@@ -24,16 +24,52 @@ def ffmpeg_ok():
     except Exception:
         return False
 
-def gtts_speak(text, path):
+PITCH_MAP = {
+    "F1": 3, "S0": 5, "Sr": 7, "女主": 4, "旁白": -1,
+    "M2": -3, "M1": -5, "男主": -4,
+}
+
+def char_pitch(code):
+    code = (code or "").strip()
+    if code in PITCH_MAP:
+        return PITCH_MAP[code]
+    c = code.lower()
+    if c.startswith("f") or "女" in code:
+        return 3
+    if c.startswith("m") or "男" in code:
+        return -3
+    if c.startswith("s"):
+        return 5
+    return 0
+
+def gtts_speak(text, path, pitch=0):
     from gtts import gTTS
+    from pathlib import Path
     t = (text or "").strip()
     if not t:
         return False
+    path = Path(path)
     try:
-        gTTS(text=t, lang="km", slow=False).save(str(path))
-        return True
+        if pitch == 0:
+            gTTS(text=t, lang="km", slow=False).save(str(path))
+            return True
+        base = path.with_name(path.stem + "_base.mp3")
+        gTTS(text=t, lang="km", slow=False).save(str(base))
+        factor = 2 ** (pitch / 12.0)
+        subprocess.run([FFMPEG, "-y", "-i", str(base),
+                        "-af", f"rubberband=pitch={factor:.6f}" ,
+                        str(path)], capture_output=True, check=True)
+        try:
+            base.unlink()
+        except Exception:
+            pass
+        return path.exists()
     except Exception:
-        return False
+        try:
+            gTTS(text=t, lang="km", slow=False).save(str(path))
+            return True
+        except Exception:
+            return False
 
 def probe_duration(path):
     try:
@@ -257,6 +293,7 @@ async def tts(payload: dict):
     vid = payload.get("video") or ""
     idx = payload.get("idx")
     text = (payload.get("text") or "").strip()
+    char_code = (payload.get("char_id") or payload.get("char") or "").strip()
     # try to get khmer text from stored segments if not provided
     segs = VID_SEGMENTS.get(vid) or []
     km_text = text
@@ -281,7 +318,7 @@ async def tts(payload: dict):
     path = DATA / name
     ok = False
     if km_text:
-        ok = gtts_speak(km_text, path)
+        ok = gtts_speak(km_text, path, pitch=char_pitch(char_code))
     if not ok:
         # fallback beep
         from pathlib import Path as _P
