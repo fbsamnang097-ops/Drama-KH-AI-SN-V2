@@ -6,35 +6,33 @@ import struct
 import shutil
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, Query
-from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 BASE = Path(__file__).resolve().parent.parent
 DATA = BASE / "data"
 DATA.mkdir(exist_ok=True)
-AUDIO_WAV = DATA / "beep.wav"
+DEFAULT_WAV = DATA / "beep.wav"
 
-# create a short audible beep wav once (so the demo actually has sound)
-if not AUDIO_WAV.exists():
+def make_beep(path, duration=1.2):
     fr = 22050
-    dur = 1.2
+    dur = max(0.3, min(6.0, float(duration or 1.2)))
     n = int(fr * dur)
-    with wave.open(str(AUDIO_WAV), "w") as w:
+    with wave.open(str(path), "w") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(fr)
         frames = bytearray()
         for i in range(n):
             t = i / fr
-            # two-tone beep
             val = 0.35 * math.sin(2 * math.pi * 440 * t) + 0.2 * math.sin(2 * math.pi * 880 * t)
-            # fade out
-            env = 1.0 - (i / n)
+            env = 1.0 - (i / n) * 0.6
             val *= env
             iv = int(max(-1, min(1, val)) * 32767)
-            frames += struct.pack("<h", iv) if False else iv.to_bytes(2, "little", signed=True)
+            frames += iv.to_bytes(2, "little", signed=True)
         w.writeframes(frames)
 
+if not DEFAULT_WAV.exists():
+    make_beep(DEFAULT_WAV, 1.2)
 
 app = FastAPI(title="KH Drama Pro (mock backend)")
 
@@ -42,6 +40,7 @@ VIDEOS = {}
 EXPORTS = {}
 BGM = {}
 OPS = {}
+VID_SEGMENTS = {}
 
 ROLES = [
     {"char": "F1", "voiceName": "F1 (female)"},
@@ -118,6 +117,8 @@ async def transcribe(payload: dict):
     if prog:
         OPS[prog] = {"state": "running", "phase": "Transcribing", "total": len(DEMO_LINES), "completed": 0}
     segs = [dict(s) for s in DEMO_LINES]
+    if vid:
+        VID_SEGMENTS[vid] = segs
     if prog:
         OPS[prog] = {"state": "done", "phase": "Done", "total": len(segs), "completed": len(segs)}
     return segs
@@ -157,7 +158,26 @@ async def detect(payload: dict):
 
 @app.post("/api/tts")
 async def tts(payload: dict):
-    return {"url": "/files/beep.wav", "audio_duration": 1.2}
+    vid = payload.get("video") or ""
+    idx = payload.get("idx")
+    dur = 1.2
+    segs = VID_SEGMENTS.get(vid) or []
+    try:
+        if idx is not None and isinstance(idx, int) and 0 <= idx < len(segs):
+            s = segs[idx]
+            dur = max(0.3, (s.get("end") or 0) - (s.get("start") or 0))
+        elif idx is not None:
+            i = int(idx)
+            if 0 <= i < len(segs):
+                s = segs[i]
+                dur = max(0.3, (s.get("end") or 0) - (s.get("start") or 0))
+    except Exception:
+        dur = 1.2
+    name = f"{vid or 'x'}_{idx if idx is not None else 'tts'}.wav"
+    path = DATA / name
+    if not path.exists():
+        make_beep(path, dur)
+    return {"url": f"/files/{name}", "audio_duration": dur}
 
 
 @app.post("/api/layer")
